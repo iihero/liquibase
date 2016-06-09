@@ -25,7 +25,8 @@ public class ColumnSnapshotGenerator extends JdbcSnapshotGenerator {
 
     private static final String LIQUIBASE_COMPLETE = "liquibase-complete";
 
-    private Pattern postgresValuePattern = Pattern.compile("'(.*)'::[\\w ]+");
+    private Pattern postgresStringValuePattern = Pattern.compile("'(.*)'::[\\w ]+");
+    private Pattern postgresNumberValuePattern = Pattern.compile("(\\d*)::[\\w ]+");
 
     public ColumnSnapshotGenerator() {
         super(Column.class, new Class[]{Table.class, View.class});
@@ -58,7 +59,9 @@ public class ColumnSnapshotGenerator extends JdbcSnapshotGenerator {
                     column = readColumn(data, relation, database);
                 }
             }
-            if (column != null && database instanceof MSSQLDatabase && database.getDatabaseMajorVersion() >= 8) {
+
+            // sys.extended_properties is added to Azure on V12: https://feedback.azure.com/forums/217321-sql-database/suggestions/6549815-add-sys-extended-properties-for-meta-data-support
+            if (column != null && database instanceof MSSQLDatabase && ((!((MSSQLDatabase) database).isAzureDb() && database.getDatabaseMajorVersion() >= 8) || database.getDatabaseMajorVersion() >= 12)) {
                 String sql;
                 if (database.getDatabaseMajorVersion() >= 9) {
                     // SQL Server 2005 or later
@@ -222,7 +225,12 @@ public class ColumnSnapshotGenerator extends JdbcSnapshotGenerator {
         DataType type = readDataType(columnMetadataResultSet, column, database);
         column.setType(type);
 
-        column.setDefaultValue(readDefaultValue(columnMetadataResultSet, column, database));
+        Object defaultValue = readDefaultValue(columnMetadataResultSet, column, database);
+        if (defaultValue != null && defaultValue instanceof DatabaseFunction && ((DatabaseFunction) defaultValue).getValue().matches("\\w+")) {
+            defaultValue = new DatabaseFunction(((DatabaseFunction) defaultValue).getValue().toUpperCase());
+        }
+        column.setDefaultValue(defaultValue);
+
 
         return column;
     }
@@ -260,6 +268,8 @@ public class ColumnSnapshotGenerator extends JdbcSnapshotGenerator {
                     if ("C".equals(charUsed)) {
                         unit = DataType.ColumnSizeUnit.CHAR;
                         type.setColumnSize(columnMetadataResultSet.getInt("CHAR_LENGTH"));
+                    } else if ("B".equals(charUsed)) {
+                        unit = DataType.ColumnSizeUnit.BYTE;
                     }
                     type.setColumnSizeUnit(unit);
                 }
@@ -270,6 +280,22 @@ public class ColumnSnapshotGenerator extends JdbcSnapshotGenerator {
         }
 
         String columnTypeName = (String) columnMetadataResultSet.get("TYPE_NAME");
+
+        if (database instanceof MSSQLDatabase) {
+            if (columnTypeName.equalsIgnoreCase("numeric() identity")) {
+                columnTypeName = "numeric";
+            } else if (columnTypeName.equalsIgnoreCase("xml")) {
+                columnMetadataResultSet.set("COLUMN_SIZE", null);
+                columnMetadataResultSet.set("DECIMAL_DIGITS", null);
+            } else if (columnTypeName.equalsIgnoreCase("datetimeoffset")) {
+                columnMetadataResultSet.set("COLUMN_SIZE", columnMetadataResultSet.getInt("DECIMAL_DIGITS"));
+                columnMetadataResultSet.set("DECIMAL_DIGITS", null);
+            } else if (columnTypeName.equalsIgnoreCase("time")) {
+                columnMetadataResultSet.set("COLUMN_SIZE", columnMetadataResultSet.getInt("DECIMAL_DIGITS"));
+                columnMetadataResultSet.set("DECIMAL_DIGITS", null);
+            }
+        }
+
 
         if (database instanceof FirebirdDatabase) {
             if (columnTypeName.equals("BLOB SUB_TYPE 0")) {
@@ -382,11 +408,23 @@ public class ColumnSnapshotGenerator extends JdbcSnapshotGenerator {
         if (database instanceof PostgresDatabase) {
             Object defaultValue = columnMetadataResultSet.get("COLUMN_DEF");
             if (defaultValue != null && defaultValue instanceof String) {
-                Matcher matcher = postgresValuePattern.matcher((String) defaultValue);
+                Matcher matcher = postgresStringValuePattern.matcher((String) defaultValue);
                 if (matcher.matches()) {
                     defaultValue = matcher.group(1);
+                } else {
+                    matcher = postgresNumberValuePattern.matcher((String) defaultValue);
+                    if (matcher.matches()) {
+                        defaultValue = matcher.group(1);
+                    }
+
                 }
                 columnMetadataResultSet.set("COLUMN_DEF", defaultValue);
+            }
+        }
+
+        if (database instanceof DB2Database) {
+            if (columnMetadataResultSet.get("COLUMN_DEF") != null && ((String) columnMetadataResultSet.get("COLUMN_DEF")).equalsIgnoreCase("NULL")) {
+                columnMetadataResultSet.set("COLUMN_DEF", null);
             }
         }
 

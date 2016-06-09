@@ -4,6 +4,7 @@ import liquibase.CatalogAndSchema;
 import liquibase.database.AbstractJdbcDatabase;
 import liquibase.database.DatabaseConnection;
 import liquibase.database.ObjectQuotingStrategy;
+import liquibase.database.OfflineConnection;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.structure.DatabaseObject;
 import liquibase.exception.DatabaseException;
@@ -11,7 +12,6 @@ import liquibase.executor.ExecutorService;
 import liquibase.logging.LogFactory;
 import liquibase.statement.core.RawCallStatement;
 import liquibase.statement.core.RawSqlStatement;
-import liquibase.structure.core.Index;
 import liquibase.structure.core.Table;
 import liquibase.util.StringUtils;
 
@@ -160,20 +160,11 @@ public class PostgresDatabase extends AbstractJdbcDatabase {
 
     @Override
     public String escapeObjectName(String objectName, Class<? extends DatabaseObject> objectType) {
-        if (hasMixedCase(objectName)) {
+        if (quotingStrategy == ObjectQuotingStrategy.LEGACY && hasMixedCase(objectName)) {
             return "\"" + objectName + "\"";
         } else {
             return super.escapeObjectName(objectName, objectType);
         }
-    }
-
-    @Override
-    public String escapeObjectName(String catalogName, String schemaName, String objectName, Class<? extends DatabaseObject> objectType) {
-        if (Index.class.isAssignableFrom(objectType)) {
-            return escapeObjectName(objectName, objectType);
-        }
-
-        return super.escapeObjectName(catalogName, schemaName, objectName, objectType);
     }
 
     @Override
@@ -245,8 +236,18 @@ public class PostgresDatabase extends AbstractJdbcDatabase {
     }
 
     @Override
-    protected String getConnectionSchemaNameCallStatement() {
-        return "select current_schema()";
+    protected String getConnectionSchemaName() {
+        if (getConnection() == null || getConnection() instanceof OfflineConnection) {
+          return null;
+        }
+        try {
+            String currentSchema = ExecutorService.getInstance().getExecutor(this)
+                    .queryForObject(new RawCallStatement("select current_schema"), String.class);
+            return currentSchema;
+
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to get current schema", e);
+        }
     }
 
     private boolean catalogExists(String catalogName) throws DatabaseException {

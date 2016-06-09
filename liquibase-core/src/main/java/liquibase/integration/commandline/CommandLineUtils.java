@@ -113,6 +113,15 @@ public class CommandLineUtils {
             
             //Todo: move to database object methods in 4.0
             initializeDatabase(username, defaultCatalogName, defaultSchemaName, database);
+
+//            ValidationErrors errors = database.validate();
+//            if (errors.hasErrors()) {
+//                throw new DatabaseException("Database validation failed: "+errors.toString());
+//            } else {
+//                for (String warning : errors.getWarningMessages()) {
+//                    LogFactory.getInstance().getLog().warning(warning);
+//                }
+//            }
             return database;
         } catch (Exception e) {
             throw new DatabaseException(e);
@@ -136,7 +145,7 @@ public class CommandLineUtils {
                 if (schema == null) {
                     schema = defaultSchemaName;
                 }
-                ExecutorService.getInstance().getExecutor(database).execute(new RawSqlStatement("ALTER SESSION SET CURRENT_SCHEMA="+schema));
+                ExecutorService.getInstance().getExecutor(database).execute(new RawSqlStatement("ALTER SESSION SET CURRENT_SCHEMA="+database.escapeObjectName(schema, Schema.class)));
             } else if (database instanceof MSSQLDatabase && defaultSchemaName != null) {
 boolean sql2005OrLater = true;
                     try {
@@ -144,7 +153,7 @@ boolean sql2005OrLater = true;
                     } catch (DatabaseException e) {
                         // Assume SQL Server 2005 or later
                     }
-                    if (sql2005OrLater) {
+                    if (sql2005OrLater && username != null) {
                         ExecutorService.getInstance().getExecutor(database).execute(new RawSqlStatement(
                                 "IF USER_NAME() <> N'dbo'\r\n" +
                                 "BEGIN\r\n" +

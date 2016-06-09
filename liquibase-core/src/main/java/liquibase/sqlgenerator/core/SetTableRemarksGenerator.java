@@ -16,7 +16,8 @@ public class SetTableRemarksGenerator extends AbstractSqlGenerator<SetTableRemar
 	@Override
 	public boolean supports(SetTableRemarksStatement statement, Database database) {
 		return database instanceof MySQLDatabase || database instanceof OracleDatabase || database instanceof PostgresDatabase
-				|| database instanceof DB2Database || database instanceof MSSQLDatabase;
+				|| database instanceof DB2Database || database instanceof MSSQLDatabase || database instanceof H2Database
+				|| database instanceof SybaseASADatabase;
 	}
 
 	@Override
@@ -29,9 +30,9 @@ public class SetTableRemarksGenerator extends AbstractSqlGenerator<SetTableRemar
 	@Override
     public Sql[] generateSql(SetTableRemarksStatement statement, Database database, SqlGeneratorChain sqlGeneratorChain) {
 		String sql;
-		String remarks = database.escapeStringForDatabase(statement.getRemarks());
+		String remarksEscaped = database.escapeStringForDatabase(StringUtils.trimToEmpty(statement.getRemarks()));
 		if (database instanceof MySQLDatabase) {
-			sql = "ALTER TABLE " + database.escapeTableName(statement.getCatalogName(), statement.getSchemaName(), statement.getTableName()) + " COMMENT = '" + StringUtils.trimToEmpty(remarks)
+			sql = "ALTER TABLE " + database.escapeTableName(statement.getCatalogName(), statement.getSchemaName(), statement.getTableName()) + " COMMENT = '" + remarksEscaped
 					+ "'";
 		} else if (database instanceof MSSQLDatabase) {
 			String schemaName = statement.getSchemaName();
@@ -47,7 +48,7 @@ public class SetTableRemarksGenerator extends AbstractSqlGenerator<SetTableRemar
 					"DECLARE @FullTableName SYSNAME; " +
 					"SET @FullTableName = N'" + schemaName+"."+statement.getTableName() + "';" +
 					"DECLARE @MS_DescriptionValue NVARCHAR(200); " +
-					"SET @MS_DescriptionValue = N'" + statement.getRemarks() + "';" +
+					"SET @MS_DescriptionValue = N'" + remarksEscaped + "';" +
 					"DECLARE @MS_Description NVARCHAR(200) " +
 					"set @MS_Description = NULL; " +
 					"SET @MS_Description = (SELECT CAST(Value AS NVARCHAR(200)) AS [MS_Description] " +
@@ -75,10 +76,8 @@ public class SetTableRemarksGenerator extends AbstractSqlGenerator<SetTableRemar
 					"@level1name = @TableName; " +
 					"END";
 		} else {
-			String command = "COMMENT";
-
-			sql = command + " ON TABLE " + database.escapeTableName(statement.getCatalogName(), statement.getSchemaName(), statement.getTableName()) + " IS '"
-					+ database.escapeStringForDatabase(remarks) + "'";
+			sql = "COMMENT ON TABLE " + database.escapeTableName(statement.getCatalogName(), statement.getSchemaName(), statement.getTableName()) + " IS '"
+					+ remarksEscaped + "'";
 		}
 
 		return new Sql[] { new UnparsedSql(sql, getAffectedTable(statement)) };

@@ -375,10 +375,12 @@ public class ChangeSet implements Conditional, ChangeLogChild {
             String changeSetAuthor = rollbackNode.getChildValue(null, "changeSetAuthor", String.class);
             String changeSetPath = rollbackNode.getChildValue(null, "changeSetPath", getFilePath());
 
-            DatabaseChangeLog changeLog = getChangeLog().getRootChangeLog();
-            ChangeSet changeSet = changeLog.getChangeSet(changeSetPath, changeSetAuthor, changeSetId);
-            if (changeSet == null) {
-                throw new ParsedNodeException("Change set "+new ChangeSet(changeSetId, changeSetAuthor, false, false, changeSetPath, null, null, null).toString(false)+" does not exist");
+            ChangeSet changeSet = this.getChangeLog().getChangeSet(changeSetPath, changeSetAuthor, changeSetId);
+            if (changeSet == null) { //check from root
+                changeSet = getChangeLog().getRootChangeLog().getChangeSet(changeSetPath, changeSetAuthor, changeSetId);
+                if (changeSet == null) {
+                    throw new ParsedNodeException("Change set " + new ChangeSet(changeSetId, changeSetAuthor, false, false, changeSetPath, null, null, null).toString(false) + " does not exist");
+                }
             }
             for (Change change : changeSet.getChanges()) {
                 rollback.getChanges().add(change);
@@ -635,6 +637,10 @@ public class ChangeSet implements Conditional, ChangeLogChild {
                     if (((change instanceof DbmsTargetedChange)) && !DatabaseList.definitionMatches(((DbmsTargetedChange) change).getDbms(), database, true)) {
                         continue;
                     }
+                    ValidationErrors errors = change.validate(database);
+                    if (errors.hasErrors()) {
+                        throw new RollbackFailedException("Rollback statement failed validation: "+errors.toString());
+                    }
                     SqlStatement[] changeStatements = change.generateStatements(database);
                     if (changeStatements != null) {
                         statements.addAll(Arrays.asList(changeStatements));
@@ -721,6 +727,23 @@ public class ChangeSet implements Conditional, ChangeLogChild {
 
     public Set<String> getDbmsSet() {
         return dbmsSet;
+    }
+
+    public Collection<ContextExpression> getInheritableContexts() {
+        Collection<ContextExpression> expressions = new ArrayList<ContextExpression>();
+        DatabaseChangeLog changeLog = getChangeLog();
+        while (changeLog != null) {
+            ContextExpression expression = changeLog.getContexts();
+            if (expression != null && !expression.isEmpty()) {
+                expressions.add(expression);
+            }
+            ContextExpression includeExpression = changeLog.getIncludeContexts();
+            if (includeExpression != null && !includeExpression.isEmpty()) {
+                expressions.add(includeExpression);
+            }
+            changeLog = changeLog.getParentChangeLog();
+        }
+        return Collections.unmodifiableCollection(expressions);
     }
 
     public DatabaseChangeLog getChangeLog() {

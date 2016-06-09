@@ -1,12 +1,15 @@
 package liquibase.sqlgenerator.core;
 
 import java.util.ArrayList;
+import java.util.SortedSet;
 
 import liquibase.database.Database;
 import liquibase.exception.ValidationErrors;
 import liquibase.sql.Sql;
 import liquibase.sql.UnparsedSql;
+import liquibase.sqlgenerator.SqlGenerator;
 import liquibase.sqlgenerator.SqlGeneratorChain;
+import liquibase.sqlgenerator.SqlGeneratorFactory;
 import liquibase.statement.core.InsertSetStatement;
 import liquibase.statement.core.InsertStatement;
 import liquibase.structure.core.Relation;
@@ -42,7 +45,7 @@ public class InsertSetGenerator extends AbstractSqlGenerator<InsertSetStatement>
 		int index = 0;
 		for (InsertStatement sttmnt : statement.getStatements()) {
 			index++;
-			myGenerator.generateValues(sql, sttmnt, database);
+			getInsertGenerator(database).generateValues(sql, sttmnt, database);
 			sql.append(",");
 			if (index > statement.getBatchThreshold()) {
 				result.add(completeStatement(statement, sql));
@@ -52,7 +55,9 @@ public class InsertSetGenerator extends AbstractSqlGenerator<InsertSetStatement>
 				generateHeader(sql, statement, database);
 			}
 		}
-		result.add(completeStatement(statement, sql));
+		if (index > 0) {
+			result.add(completeStatement(statement, sql));
+		}
 
 		return result.toArray(new UnparsedSql[result.size()]);
 	}
@@ -65,12 +70,18 @@ public class InsertSetGenerator extends AbstractSqlGenerator<InsertSetStatement>
     
     public void generateHeader(StringBuffer sql,InsertSetStatement statement, Database database) {
         InsertStatement insert=statement.peek();
-        myGenerator.generateHeader(sql,insert,database);
-    }
-    
-    protected Relation getAffectedTable(InsertSetStatement statement) {
+		getInsertGenerator(database).generateHeader(sql, insert, database);
+	}
+
+	protected InsertGenerator getInsertGenerator(Database database) {
+		SortedSet<SqlGenerator> generators = SqlGeneratorFactory.getInstance().getGenerators(new InsertStatement(null, null, null), database);
+		if (generators == null || generators.size() == 0) {
+			return null;
+		}
+		return (InsertGenerator) generators.iterator().next();
+	}
+
+	protected Relation getAffectedTable(InsertSetStatement statement) {
         return new Table().setName(statement.getTableName()).setSchema(statement.getCatalogName(), statement.getSchemaName());
     }
-    
-    private InsertGenerator myGenerator= new InsertGenerator();
 }

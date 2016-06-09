@@ -7,23 +7,27 @@ import liquibase.database.OfflineConnection;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.exception.DatabaseException;
 import liquibase.exception.UnexpectedLiquibaseException;
+import liquibase.exception.ValidationErrors;
 import liquibase.executor.ExecutorService;
 import liquibase.logging.LogFactory;
-import liquibase.statement.DatabaseFunction;
-import liquibase.statement.SequenceCurrentValueFunction;
-import liquibase.statement.SequenceNextValueFunction;
+import liquibase.statement.*;
 import liquibase.statement.core.RawCallStatement;
 import liquibase.statement.core.RawSqlStatement;
 import liquibase.structure.DatabaseObject;
-import liquibase.structure.core.Catalog;
-import liquibase.structure.core.Schema;
+import liquibase.structure.core.*;
+import liquibase.util.JdbcUtils;
+import liquibase.util.StringUtils;
 
 import java.lang.reflect.Method;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Encapsulates Oracle database support.
@@ -34,6 +38,9 @@ public class OracleDatabase extends AbstractJdbcDatabase {
 
     private Set<String> reservedWords = new HashSet<String>();
     private Set<String> userDefinedTypes = null;
+
+    private Boolean canAccessDbaRecycleBin;
+    private Integer databaseMajorVersion;
 
     public OracleDatabase() {
         super.unquotedObjectsAreUppercased=true;
@@ -53,7 +60,7 @@ public class OracleDatabase extends AbstractJdbcDatabase {
 
     @Override
     public void setConnection(DatabaseConnection conn) {
-        reservedWords.addAll(Arrays.asList("GROUP", "USER", "SESSION", "PASSWORD", "RESOURCE", "START", "SIZE", "UID", "DESC")); //more reserved words not returned by driver
+        reservedWords.addAll(Arrays.asList("GROUP", "USER", "SESSION", "PASSWORD", "RESOURCE", "START", "SIZE", "UID", "DESC", "ORDER")); //more reserved words not returned by driver
 
         Connection sqlConn = null;
         if (!(conn instanceof OfflineConnection)) {
@@ -88,6 +95,30 @@ public class OracleDatabase extends AbstractJdbcDatabase {
                     ; //cannot set it. That is OK
                 }
 
+                Statement statement = null;
+                ResultSet resultSet = null;
+                try {
+                    statement = sqlConn.createStatement();
+                    resultSet = statement.executeQuery("SELECT value FROM v$parameter WHERE name = 'compatible'");
+                    String compatibleVersion = null;
+                    if (resultSet.next()) {
+                        compatibleVersion = resultSet.getString("value");
+                    }
+                    if (compatibleVersion != null) {
+                        Matcher majorVersionMatcher = Pattern.compile("(\\d+)\\..*").matcher(compatibleVersion);
+                        if (majorVersionMatcher.matches()) {
+                            this.databaseMajorVersion = Integer.valueOf(majorVersionMatcher.group(1));
+                        }
+                    }
+                } catch (SQLException e) {
+                    String message = "Cannot read from v$parameter: "+e.getMessage();
+                    LogFactory.getLogger().info("Could not set check compatibility mode on OracleDatabase: " + message);
+                } finally {
+                    JdbcUtils.close(resultSet, statement);
+                }
+
+
+
             }
         }
         super.setConnection(conn);
@@ -101,6 +132,15 @@ public class OracleDatabase extends AbstractJdbcDatabase {
     @Override
     protected String getDefaultDatabaseProductName() {
         return "Oracle";
+    }
+
+    @Override
+    public int getDatabaseMajorVersion() throws DatabaseException {
+        if (databaseMajorVersion == null) {
+            return super.getDatabaseMajorVersion();
+        } else {
+            return databaseMajorVersion;
+        }
     }
 
     @Override
@@ -256,7 +296,20 @@ public class OracleDatabase extends AbstractJdbcDatabase {
             }
         } else if (example.getName() != null) {
             if (example.getName().startsWith("BIN$")) { //oracle deleted table
-                return true;
+                boolean filteredInOriginalQuery = this.canAccessDbaRecycleBin();
+                if (!filteredInOriginalQuery) {
+                    filteredInOriginalQuery = StringUtils.trimToEmpty(example.getSchema().getName()).equalsIgnoreCase(this.getConnection().getConnectionUserName());
+                }
+
+                if (filteredInOriginalQuery) {
+                    if (example instanceof PrimaryKey || example instanceof Index || example instanceof liquibase.statement.UniqueConstraint) { //some objects don't get renamed back and so are already filtered in the metadata queries
+                        return false;
+                    } else {
+                        return true;
+                    }
+                } else {
+                    return true;
+                }
             } else if (example.getName().startsWith("AQ$")) { //oracle AQ tables
                 return true;
             } else if (example.getName().startsWith("DR$")) { //oracle index tables
@@ -383,5 +436,57 @@ public class OracleDatabase extends AbstractJdbcDatabase {
         }
 
         return super.generateDatabaseFunctionValue(databaseFunction);
+    }
+
+    @Override
+    public ValidationErrors validate() {
+        ValidationErrors errors = super.validate();
+        DatabaseConnection connection = getConnection();
+        if (connection == null || connection instanceof OfflineConnection) {
+            LogFactory.getInstance().getLog().info("Cannot validate offline database");
+            return errors;
+        }
+
+        if (!canAccessDbaRecycleBin()) {
+            errors.addWarning(getDbaRecycleBinWarning());
+        }
+
+        return errors;
+
+    }
+
+    public String getDbaRecycleBinWarning() {
+        return "Liquibase needs to access the DBA_RECYCLEBIN table so we can automatically handle the case where constraints are deleted and restored. Since Oracle doesn't properly restore the original table names referenced in the constraint, we use the information from the DBA_RECYCLEBIN to automatically correct this issue.\n" +
+                "\n" +
+                "The user you used to connect to the database ("+getConnection().getConnectionUserName()+") needs to have \"SELECT ON SYS.DBA_RECYCLEBIN\" permissions set before we can perform this operation. Please run the following SQL to set the appropriate permissions, and try running the command again.\n" +
+                "\n" +
+                "     GRANT SELECT ON SYS.DBA_RECYCLEBIN TO "+getConnection().getConnectionUserName()+";";
+    }
+
+    public boolean canAccessDbaRecycleBin() {
+        if (canAccessDbaRecycleBin == null) {
+            DatabaseConnection connection = getConnection();
+            if (connection == null || connection instanceof OfflineConnection) {
+                return false;
+            }
+
+            Statement statement = null;
+            try {
+                statement = ((JdbcConnection) connection).createStatement();
+                statement.executeQuery("select 1 from dba_recyclebin where 0=1");
+                this.canAccessDbaRecycleBin = true;
+            } catch (Exception e) {
+                if (e instanceof SQLException && e.getMessage().startsWith("ORA-00942")) { //ORA-00942: table or view does not exist
+                    this.canAccessDbaRecycleBin = false;
+                } else {
+                    LogFactory.getInstance().getLog().warning("Cannot check dba_recyclebin access", e);
+                    this.canAccessDbaRecycleBin = false;
+                }
+            } finally {
+                JdbcUtils.close(null, statement);
+            }
+        }
+
+        return canAccessDbaRecycleBin;
     }
 }

@@ -55,6 +55,7 @@ import java.util.regex.Pattern;
 public abstract class AbstractJdbcDatabase implements Database {
 
     private static final Pattern startsWithNumberPattern = Pattern.compile("^[0-9].*");
+    private final static int FETCH_SIZE = 1000;
 
     private DatabaseConnection connection;
     protected String defaultCatalogName;
@@ -353,6 +354,11 @@ public abstract class AbstractJdbcDatabase implements Database {
         if (!supportsSchemas()) {
             defaultCatalogSet = schemaName != null;
         }
+    }
+
+    @Override
+    public Integer getFetchSize() {
+        return FETCH_SIZE;
     }
 
     /**
@@ -754,7 +760,7 @@ public abstract class AbstractJdbcDatabase implements Database {
 
 	        final long changeSetStarted = System.currentTimeMillis();
 	        DiffResult diffResult = DiffGeneratorFactory.getInstance().compare(new EmptyDatabaseSnapshot(this), snapshot, new CompareControl(snapshot.getSnapshotControl().getTypesToInclude()));
-            List<ChangeSet> changeSets = new DiffToChangeLog(diffResult, new DiffOutputControl(true, true, false).addIncludedSchema(schemaToDrop)).generateChangeSets();
+            List<ChangeSet> changeSets = new DiffToChangeLog(diffResult, new DiffOutputControl(true, true, false, null).addIncludedSchema(schemaToDrop)).generateChangeSets();
 	        LogFactory.getLogger().debug(String.format("ChangeSet to Remove Database Objects generated in %d ms.", System.currentTimeMillis() - changeSetStarted));
 
             boolean previousAutoCommit = this.getAutoCommitMode();
@@ -836,10 +842,10 @@ public abstract class AbstractJdbcDatabase implements Database {
     public boolean isLiquibaseObject(final DatabaseObject object) {
         if (object instanceof Table) {
             Schema liquibaseSchema = new Schema(getLiquibaseCatalogName(), getLiquibaseSchemaName());
-            if (DatabaseObjectComparatorFactory.getInstance().isSameObject(object, new Table().setName(getDatabaseChangeLogTableName()).setSchema(liquibaseSchema), this)) {
+            if (DatabaseObjectComparatorFactory.getInstance().isSameObject(object, new Table().setName(getDatabaseChangeLogTableName()).setSchema(liquibaseSchema), null, this)) {
                 return true;
             }
-            if (DatabaseObjectComparatorFactory.getInstance().isSameObject(object, new Table().setName(getDatabaseChangeLogLockTableName()).setSchema(liquibaseSchema), this)) {
+            if (DatabaseObjectComparatorFactory.getInstance().isSameObject(object, new Table().setName(getDatabaseChangeLogLockTableName()).setSchema(liquibaseSchema), null, this)) {
                 return true;
             }
             return false;
@@ -1542,5 +1548,10 @@ public abstract class AbstractJdbcDatabase implements Database {
             attributes.put(key, value);
         }
         return this;
+    }
+
+    @Override
+    public ValidationErrors validate() {
+        return new ValidationErrors();
     }
 }
